@@ -1,6 +1,9 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
+*.py[cod]
+*.pyo
+*.pyd
 *$py.class
 
 # C extensions
@@ -26,11 +29,19 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# App runtime artifacts
+config/app_config.json
+data/failed-files.csv
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+
+# Local backups (ensure not inside repo, but ignore if present)
+Mobile-Backup/
+backups/
 
 # Installer logs
 pip-log.txt
@@ -173,7 +184,7 @@ cython_debug/
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+.idea/
 
 # Abstra
 # Abstra is an AI-powered process automation framework.
@@ -186,10 +197,17 @@ cython_debug/
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
+
+# DS Store
+.DS_Store
+
+#Thumbs DB
+Thumbs.db
 
 # Ruff stuff:
 .ruff_cache/
+ruff_cache/
 
 # PyPI configuration file
 .pypirc
