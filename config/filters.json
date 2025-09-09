@@ -1,0 +1,6 @@
+{
+  "excluded_folders": [
+        ".SLOGAN", 
+        "Android"
+    ]
+}
