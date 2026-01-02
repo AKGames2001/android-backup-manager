@@ -45,7 +45,7 @@ from config.paths import (
     DEFAULT_USER,
     path_for_user_session,
     record_path_for_user,
-    failed_csv_path,
+    failed_csv_path_for_user,
     ensure_dir,
     ensure_file,
     resolve_data_path,
@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         self.chosen_base_dir = (initial_backup_base or BASE_BACKUP_DIR or os.getcwd()).strip() or os.getcwd()
         self.final_dest_root: Optional[str] = None
         self.record_path: Optional[str] = None
-        self.failed_csv_path = failed_csv_path()
+        self.failed_csv_path = failed_csv_path_for_user(self.chosen_base_dir, self.user_name)
         self.current_backup_worker = None
         self._committed_user_name = self.user_name
         self._user_pending = False
@@ -92,9 +92,11 @@ class MainWindow(QMainWindow):
         adb_path = initial_adb_path or ADB_PATH
         self.adb = ADBClient(adb_path)
 
-        temp_record_path = os.path.join(os.getcwd(), ".tmp_record.json")
-        ensure_file(temp_record_path, initial={"included_folders": []})
-        self.record = RecordStore(temp_record_path)
+        localappdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        temproot = os.path.join(localappdata, "AndroidBackupManager", "cache")
+        temprecordpath = os.path.join(temproot, ".tmp_record.json")
+        ensure_file(temprecordpath, initial={"included_folders": []})
+        self.record = RecordStore(temprecordpath)
 
         # Prepare restore_record path (for current user context)
         rr_path = restore_record_path_for_user(self.chosen_base_dir, self.user_name) if self.user_name else None
@@ -301,6 +303,7 @@ class MainWindow(QMainWindow):
 
         self.final_dest_root = path_for_user_session(self.chosen_base_dir, self.user_name, use_date=True)
         self.record_path = record_path_for_user(self.chosen_base_dir, self.user_name)
+        self.failed_csv_path = failed_csv_path_for_user(self.chosen_base_dir, self.user_name)
 
         ensure_dir(self.final_dest_root)
         ensure_file(self.record_path, initial={"included_folders": []})
@@ -432,8 +435,6 @@ class MainWindow(QMainWindow):
         if pending:
             self.user_input.setFocus()
 
-
-
     def on_user_edited(self, _text: str) -> None:
         current = (self.user_input.text() or "").strip() or DEFAULT_USER
         self._set_user_pending(current != self._committed_user_name)
@@ -448,6 +449,7 @@ class MainWindow(QMainWindow):
         # Commit once
         self.user_name = new_user
         self._committed_user_name = new_user
+        self.failed_csv_path = failed_csv_path_for_user(self.chosen_base_dir, self.user_name)
         self._set_user_pending(False)
 
         # Now do the existing “apply user context” work ONCE (previously in on_user_changed)

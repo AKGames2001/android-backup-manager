@@ -39,8 +39,12 @@ def record_path_for_user(base_dir: str, user: str) -> str:
 def restore_record_path_for_user(base_dir: str, user: str) -> str:
     return os.path.join(base_dir, user, "restore_record.json")
 
-def failed_csv_path() -> str:
-    return FAILED_CSV_FILENAME
+def failed_csv_path_for_user(base_dir: str, user: str) -> str:
+    return os.path.join(base_dir, user, "failed-files.csv")
+
+# Discontinued functions! : Keeping for backwards compatibility.
+# def failed_csv_path() -> str:
+#     return FAILED_CSV_FILENAME
 
 # ---------- Runtime location helpers ----------
 
@@ -98,6 +102,10 @@ def app_config_candidates() -> list[str]:
     cands.append(os.path.join(os.getcwd(), "config", "app_config.json"))  # CWD
     return cands
 
+def _user_config_dir() -> str:
+    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(appdata, "AndroidBackupManager")
+
 def current_app_config_path() -> str | None:
     for p in app_config_candidates():
         if os.path.exists(p):
@@ -105,18 +113,19 @@ def current_app_config_path() -> str | None:
     return None
 
 def ensure_app_config_dir() -> str:
-    # Always write next to the executable, not to MEIPASS or CWD
-    target = os.path.join(_exe_dir(), "config")
+    # Write to per-user AppData to avoid Program Files permission issues
+    target = _user_config_dir()
     ensure_dir(target)
     return target
 
 def write_app_config(cfg: dict) -> str:
-    # Persist machine-level config (overrides bundled defaults on next run)
+    # Persist per-user config (safe without admin rights)
     out_dir = ensure_app_config_dir()
     out_path = os.path.join(out_dir, "app_config.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
     return out_path
+
 
 def needs_first_run() -> bool:
     """
