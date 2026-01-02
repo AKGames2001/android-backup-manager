@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Optional, List, Dict
 
-from PySide6.QtCore import Qt, QThread, QSettings
+from PySide6.QtCore import Qt, QThread, QSettings, QSignalBlocker
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QWidget,
@@ -85,6 +85,8 @@ class MainWindow(QMainWindow):
         self.record_path: Optional[str] = None
         self.failed_csv_path = failed_csv_path()
         self.current_backup_worker = None
+        self._committed_user_name = self.user_name
+        self._user_pending = False
 
         # -- Core services (initialized with a temporary record until a session starts) --
         adb_path = initial_adb_path or ADB_PATH
@@ -175,6 +177,48 @@ class MainWindow(QMainWindow):
         self.user_input.setPlaceholderText("Enter user name")
         row1.addWidget(self.user_input, 1)
 
+        self.user_apply_btn = QPushButton("✓")
+        self.user_apply_btn.setToolTip("Apply user name")
+        self.user_apply_btn.setFixedWidth(36)
+        self.user_apply_btn.setEnabled(False)
+
+        self.user_cancel_btn = QPushButton("✕")
+        self.user_cancel_btn.setToolTip("Cancel changes")
+        self.user_cancel_btn.setFixedWidth(36)
+        self.user_cancel_btn.setEnabled(False)
+
+        self.user_apply_btn.setStyleSheet("""
+        QPushButton {
+        background-color: #1F7A3A;
+        border: 1px solid #2A2F37;
+        border-radius: 8px;
+        color: #FFFFFF;
+        font-weight: 600;
+        }
+        QPushButton:hover { background-color: #249048; }
+        QPushButton:disabled { background-color: #1A1E25; color: #7A8088; }
+        """)
+
+        self.user_cancel_btn.setStyleSheet("""
+        QPushButton {
+        background-color: #8B2C2C;
+        border: 1px solid #2A2F37;
+        border-radius: 8px;
+        color: #FFFFFF;
+        font-weight: 600;
+        }
+        QPushButton:hover { background-color: #A83838; }
+        QPushButton:disabled { background-color: #1A1E25; color: #7A8088; }
+        """)
+
+        # Hidden until user edits
+        self.user_apply_btn.setVisible(False)
+        self.user_cancel_btn.setVisible(False)
+
+        row1.addWidget(self.user_apply_btn)
+        row1.addWidget(self.user_cancel_btn)
+
+
         self.device_status = QLabel("Device: Unknown")
         self.device_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         row1.addWidget(self.device_status, 1)
@@ -237,7 +281,9 @@ class MainWindow(QMainWindow):
         self.backup_all_btn.clicked.connect(self.backup_all)
         self.backup_selected_btn.clicked.connect(self.backup_selected)
         self.stop_btn.clicked.connect(self.abort_backup)
-        self.user_input.textChanged.connect(self.on_user_changed)
+        self.user_input.textEdited.connect(self.on_user_edited)
+        self.user_apply_btn.clicked.connect(self.apply_user_change)
+        self.user_cancel_btn.clicked.connect(self.cancel_user_change)
 
     # ---------- Session preparation ----------
     def _prepare_session_paths(self) -> bool:
@@ -352,13 +398,61 @@ class MainWindow(QMainWindow):
             self.log_console.append("Backup stop requested. Cancelling...")
             self.enable_ui_actions(False)
 
-    def on_user_changed(self, text: str) -> None:
-        """Update user context, restore manager, and destination label."""
-        self.user_name = text.strip() or DEFAULT_USER
-        self.dest_label.setText(f"Destination base: {self.chosen_base_dir}")
+    def _set_user_pending(self, pending: bool) -> None:
+        self._user_pending = pending
+
+        # Show/hide + enable/disable the confirm buttons
+        self.user_apply_btn.setVisible(pending)
+        self.user_cancel_btn.setVisible(pending)
+        self.user_apply_btn.setEnabled(pending)
+        self.user_cancel_btn.setEnabled(pending)
+
+        # Highlight the line edit
+        self.user_input.setStyleSheet("border: 1px solid #FFB020;" if pending else "")
+        self.user_input.setEnabled(True)
+
+        # Prevent switching tabs, but keep current page enabled
+        self.tabs.tabBar().setEnabled(not pending)
+        if self.tabs.count() > 1:
+            self.tabs.setTabEnabled(1, not pending)  # Restore tab
+
+        # Disable everything else while editing
+        self.change_dest_btn.setEnabled(not pending)
+        self.refresh_btn.setEnabled(not pending)
+        self.scan_btn.setEnabled(not pending)
+
+        self.folder_list.setEnabled(not pending)
+        self.log_console.setEnabled(not pending)
+        self.footer_widget.setEnabled(not pending)
+
+        if hasattr(self, "restore_widget"):
+            self.restore_widget.setEnabled(not pending)
+
+        # Keep focus in the textbox while typing
+        if pending:
+            self.user_input.setFocus()
+
+
+
+    def on_user_edited(self, _text: str) -> None:
+        current = (self.user_input.text() or "").strip() or DEFAULT_USER
+        self._set_user_pending(current != self._committed_user_name)
+
+    def apply_user_change(self) -> None:
+        new_user = (self.user_input.text() or "").strip() or DEFAULT_USER
+        if new_user == self._committed_user_name:
+            self._set_user_pending(False)
+            self.user_input.clearFocus()
+            return
+
+        # Commit once
+        self.user_name = new_user
+        self._committed_user_name = new_user
+        self._set_user_pending(False)
+
+        # Now do the existing “apply user context” work ONCE (previously in on_user_changed)
         rrp = restore_record_path_for_user(self.chosen_base_dir, self.user_name)
-        self.service.restore_record_path = rrp
-        self.service.restore_manager = BackupService(
+        self.service = BackupService(
             adb=self.adb,
             source_dir=SOURCE_DIR,
             dest_root=self.service.dest_root,
@@ -366,7 +460,7 @@ class MainWindow(QMainWindow):
             failed_csv_path=self.failed_csv_path,
             filters_path=resolve_data_path("config/filters.json"),
             restore_record_path=rrp,
-        ).restore_manager
+        )
 
         user_root = os.path.join(self.chosen_base_dir, self.user_name)
         if hasattr(self, "restore_widget"):
@@ -376,6 +470,13 @@ class MainWindow(QMainWindow):
                 adb=self.adb,
                 source_dir=SOURCE_DIR,
             )
+
+    def cancel_user_change(self) -> None:
+        # Revert UI to committed value without retriggering edit logic
+        with QSignalBlocker(self.user_input):
+            self.user_input.setText(self._committed_user_name)
+        self._set_user_pending(False)
+        self.user_input.clearFocus()
 
     # ---------- Threads ----------
     def _run_discovery(self) -> None:
