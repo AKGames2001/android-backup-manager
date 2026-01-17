@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Tuple
 from PySide6.QtCore import QObject, Signal, Slot
+from core.discovery import Discovery
 from core.transfer import CopyStatus
 
 
@@ -69,7 +70,7 @@ class BackupWorker(QObject):
     finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, service, folders: List[str] | None = None):
+    def __init__(self, service, folders: List | None = None):
         super().__init__()
         self.service = service
         self.folders = folders
@@ -89,8 +90,6 @@ class BackupWorker(QObject):
 
     def _run_all(self) -> Dict[str, int]:
         """Backup all filtered folders discovered under service.source_dir."""
-        from core.discovery import Discovery
-
         if not self.service.adb.is_device_connected():
             raise RuntimeError("No device connected.")
 
@@ -112,24 +111,66 @@ class BackupWorker(QObject):
 
         return self._copy_folders(per_folder_files, total_files)
 
-    def _run_selected_only(self, selected_folders: List[str]) -> Dict[str, int]:
-        """Backup only the user-selected folders."""
-        from core.discovery import Discovery
+    def _run_selected_only(self, selected) -> Dict[str, int]:
+        """
+        Backup only the user-selected items.
+
+        selected format:
+        - legacy: List[str] of folders
+        - new: List[Tuple[path, is_dir]]
+        """
 
         if not self.service.adb.is_device_connected():
             raise RuntimeError("No device connected.")
 
         discovery = Discovery(self.service.adb)
-
         total_files = 0
         per_folder_files: Dict[str, List[str]] = {}
-        for folder in selected_folders:
-            try:
-                files = discovery.list_files_recursive(folder)
-            except Exception as e:
-                self.log.emit(f"Skipping folder (list error): {folder} -> {e}")
-                files = []
-            per_folder_files[folder] = files
+
+        # Normalise input to List[Tuple[path, is_dir]]
+        items: List[Tuple[str, bool]] = []
+        if selected and isinstance(selected[0], (list, tuple)) and len(selected[0]) >= 2:
+            items = [(p, bool(is_dir)) for (p, is_dir, *_) in selected]  # tolerate extra fields
+        else:
+            # Backwards compatibility: treat as folders only
+            items = [(p, True) for p in (selected or [])]
+
+        source_root = self.service.source_dir.rstrip("/")
+        root_prefix = source_root + "/"
+
+        # Collect all individual files that need to be copied
+        all_files: List[str] = []
+        for path, is_dir in items:
+            if is_dir:
+                try:
+                    files = discovery.list_files_recursive(path)
+                except Exception as e:
+                    self.log.emit(f"Skipping folder (list error): {path} -> {e}")
+                    files = []
+                all_files.extend(files)
+            else:
+                # Single file path (absolute on device)
+                all_files.append(path)
+
+        # Deduplicate
+        all_files = sorted(set(all_files))
+
+        # Group by first-level folder under source_root (top name),
+        # so that transfer.copy_file(f, folder_base) and restore_record
+        # paths stay consistent with existing logic.
+        for f in all_files:
+            if not f.startswith(root_prefix):
+                # Outside configured root; skip
+                self.log.emit(f"Skipping path outside source root: {f}")
+                continue
+            rel_from_root = f[len(root_prefix):]
+            top = rel_from_root.split("/", 1)[0] if rel_from_root else ""
+            if not top:
+                continue
+            base_dir = f"{source_root}/{top}"
+            per_folder_files.setdefault(base_dir, []).append(f)
+
+        for files in per_folder_files.values():
             total_files += len(files)
 
         return self._copy_folders(per_folder_files, total_files)
@@ -276,3 +317,27 @@ class RestoreWorker(QObject):
             self.finished.emit({"restored_count": copied, "failed_count": len(failed)})
         except Exception as e:
             self.error.emit(f"Restore failed: {e}")
+
+
+class DirEntriesWorker(QObject):
+    """
+    Worker that lists immediate entries for a given device directory.
+    Emits:
+    - finished(parent_dir: str, entries: List[Tuple[str, bool]])
+    - error(message: str)
+    """
+    finished = Signal(str, list)
+    error = Signal(str)
+
+    def __init__(self, discovery, parent_dir: str):
+        super().__init__()
+        self.discovery = discovery
+        self.parent_dir = parent_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            entries = self.discovery.list_entries(self.parent_dir)
+            self.finished.emit(self.parent_dir, entries)
+        except Exception as e:
+            self.error.emit(f"Expand failed: {e}")

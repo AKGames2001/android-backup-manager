@@ -4,7 +4,7 @@ Directory and file discovery on Android storage via ADB.
 """
 
 from __future__ import annotations
-from typing import List
+from typing import List, Tuple
 
 # Tunable timeouts (seconds)
 TOP_DIRS_TIMEOUT = 8
@@ -43,6 +43,30 @@ class Discovery:
                 dirs.append(path)
         dirs.sort()
         return dirs
+    
+    def list_entries(self, dir_path: str) -> List[Tuple[str, bool]]:
+        """
+        List immediate children of dir_path.
+        Returns: [(absolute_path, is_dir), ...] sorted with folders first.
+        """
+        base = dir_path.rstrip("/")
+        out = self.adb.shell(f'ls -1p "{base}"', timeout=TOP_DIRS_TIMEOUT)
+        if not out:
+            return []
+
+        entries: List[Tuple[str, bool]] = []
+        for raw in out.splitlines():
+            name = raw.strip()
+            if not name:
+                continue
+            is_dir = name.endswith("/")
+            clean = name[:-1] if is_dir else name
+            full = f"{base}/{clean}"
+            entries.append((full, is_dir))
+
+        # Folders first, then files, alphabetical
+        entries.sort(key=lambda t: (not t[1], t[0].lower()))
+        return entries
 
     def list_files_recursive(self, base_dir: str) -> List[str]:
         """

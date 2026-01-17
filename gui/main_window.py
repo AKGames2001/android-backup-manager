@@ -32,11 +32,12 @@ from PySide6.QtWidgets import (
     QMenuBar,
 )
 
-from gui.style import BASE_STYLE
-from gui.widgets.folder_list import FolderList
-from gui.widgets.log_console import LogConsole
-from gui.restore_widget import RestoreWidget
 from gui.first_run_wizard import FirstRunWizard
+from gui.restore_widget import RestoreWidget
+from gui.style import BASE_STYLE
+from gui.widgets.folder_list import FolderList, ROLE_PATH, ROLE_IS_DIR, ROLE_CHILDREN_LOADED
+from gui.widgets.log_console import LogConsole
+from gui.workers import FolderDiscoveryWorker, BackupWorker, DirEntriesWorker
 
 from config.paths import (
     ADB_PATH,
@@ -59,7 +60,6 @@ from core.service import BackupService
 from core.discovery import Discovery
 from core.filters import Filters
 
-from gui.workers import FolderDiscoveryWorker, BackupWorker
 
 
 class MainWindow(QMainWindow):
@@ -286,6 +286,7 @@ class MainWindow(QMainWindow):
         self.user_input.textEdited.connect(self.on_user_edited)
         self.user_apply_btn.clicked.connect(self.apply_user_change)
         self.user_cancel_btn.clicked.connect(self.cancel_user_change)
+        self.folder_list.tree.itemExpanded.connect(self._on_backup_tree_expanded)
 
     # ---------- Session preparation ----------
     def _prepare_session_paths(self) -> bool:
@@ -384,14 +385,18 @@ class MainWindow(QMainWindow):
         self._run_backup(selected=None)
 
     def backup_selected(self) -> None:
-        """Backup only the user-selected folders."""
-        selected = self.folder_list.selected_folders()
+        """Backup only the user-selected folders/files."""
+        selected = self.folder_list.checked_items()  # [(path, is_dir)]
         if not selected:
-            QMessageBox.information(self, "No Selection", "Please select folders to back up.")
+            QMessageBox.information(self, "No Selection", "Please select folders or files to back up.")
             return
+
         if not self._prepare_session_paths():
             return
-        self.log_console.append(f"Starting backup for selected folders ({len(selected)}) into: {self.final_dest_root}")
+
+        self.log_console.append(
+            f"Starting backup for {len(selected)} checked item(s) into: {self.final_dest_root}"
+        )
         self._run_backup(selected=selected)
 
     def abort_backup(self) -> None:
@@ -559,9 +564,45 @@ class MainWindow(QMainWindow):
 
     # ---------- Slots ----------
     def _on_discovery_finished(self, folders: List[str], msg: str) -> None:
-        """Populate the folder list and log a preview message."""
-        self.folder_list.set_folders(folders)
+        """
+        Populate the backup browser with top-level device folders and log a preview message.
+        """
+        self.folder_list.set_roots(folders)
         self.log_console.append(msg)
+
+    def _on_backup_tree_expanded(self, item):
+        # Only for directories that are not yet loaded
+        is_dir = bool(item.data(0, ROLE_IS_DIR))
+        loaded = bool(item.data(0, ROLE_CHILDREN_LOADED))
+        if not is_dir or loaded:
+            return
+
+        parent_dir = item.data(0, ROLE_PATH)
+
+        # Start worker
+        self.expand_thread = QThread(self)
+        self.expand_worker = DirEntriesWorker(
+            discovery=Discovery(self.adb),
+            parent_dir=parent_dir,
+        )
+        self.expand_worker.moveToThread(self.expand_thread)
+
+        self.expand_thread.started.connect(self.expand_worker.run)
+
+        def on_finished(dir_path: str, entries: list):
+            if dir_path != parent_dir:
+                return
+            self.folder_list.mark_children_loaded(item, entries)
+
+        self.expand_worker.finished.connect(on_finished)
+        self.expand_worker.error.connect(self._on_worker_error)
+
+        self.expand_worker.finished.connect(self.expand_thread.quit)
+        self.expand_worker.error.connect(self.expand_thread.quit)
+        self.expand_thread.finished.connect(self.expand_worker.deleteLater)
+        self.expand_thread.finished.connect(self.expand_thread.deleteLater)
+
+        self.expand_thread.start()
 
     def _on_worker_error(self, err: str) -> None:
         """Show an error dialog and re-enable UI after worker failure."""
