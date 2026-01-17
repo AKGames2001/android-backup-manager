@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
         self.user_input.textEdited.connect(self.on_user_edited)
         self.user_apply_btn.clicked.connect(self.apply_user_change)
         self.user_cancel_btn.clicked.connect(self.cancel_user_change)
-        self.folder_list.tree.itemExpanded.connect(self._on_backup_tree_expanded)
+        # self.folder_list.tree.itemExpanded.connect(self._on_backup_tree_expanded)
 
     # ---------- Session preparation ----------
     def _prepare_session_paths(self) -> bool:
@@ -496,8 +496,13 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # NOTE: itemExpanded/DirEntriesWorker is no longer needed for Backup tree
+        # once the whole tree is built upfront. [file:68]
+
+        from gui.workers import FullTreeDiscoveryWorker  # or import at top of file
+
         self.disc_thread = QThread(self)
-        self.disc_worker = FolderDiscoveryWorker(
+        self.disc_worker = FullTreeDiscoveryWorker(
             discovery=Discovery(self.adb),
             source_dir=self.service.source_dir,
             filters=Filters(resolve_data_path("config/filters.json")),
@@ -507,8 +512,8 @@ class MainWindow(QMainWindow):
         # Start worker when thread starts
         self.disc_thread.started.connect(self.disc_worker.run)
 
-        # Connect results
-        self.disc_worker.finished.connect(self._on_discovery_finished)
+        # Connect results (tree instead of folders)
+        self.disc_worker.finished.connect(self._on_discovery_finished_full_tree)
         self.disc_worker.error.connect(self._on_worker_error)
 
         # Cleanup
@@ -570,10 +575,17 @@ class MainWindow(QMainWindow):
         self.folder_list.set_roots(folders)
         self.log_console.append(msg)
 
+    def _on_discovery_finished_full_tree(self, tree: dict, msg: str) -> None:
+        # FolderList must implement set_full_tree(tree)
+        self.folder_list.set_full_tree(tree)
+        self.log_console.append(msg)
+
     def _on_backup_tree_expanded(self, item):
         # Only for directories that are not yet loaded
         is_dir = bool(item.data(0, ROLE_IS_DIR))
+        print(f"Expanding item: {item.text(0)} (is_dir={is_dir})")
         loaded = bool(item.data(0, ROLE_CHILDREN_LOADED))
+        print(f"  Children loaded: {loaded}")
         if not is_dir or loaded:
             return
 
@@ -581,10 +593,10 @@ class MainWindow(QMainWindow):
 
         # Start worker
         self.expand_thread = QThread(self)
-        self.expand_worker = DirEntriesWorker(
-            discovery=Discovery(self.adb),
-            parent_dir=parent_dir,
-        )
+        # self.expand_worker = DirEntriesWorker(
+        #     discovery=Discovery(self.adb),
+        #     parent_dir=parent_dir,
+        # )
         self.expand_worker.moveToThread(self.expand_thread)
 
         self.expand_thread.started.connect(self.expand_worker.run)

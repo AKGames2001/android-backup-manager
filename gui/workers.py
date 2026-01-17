@@ -341,3 +341,58 @@ class DirEntriesWorker(QObject):
             self.finished.emit(self.parent_dir, entries)
         except Exception as e:
             self.error.emit(f"Expand failed: {e}")
+
+
+class FullTreeDiscoveryWorker(QObject):
+    """
+    Build a full nested tree from device files for allowed top-level folders.
+
+    Emits:
+      finished(tree: dict, msg: str)
+      error(msg: str)
+    """
+    finished = Signal(dict, str)
+    error = Signal(str)
+
+    def __init__(self, discovery: Discovery, source_dir: str, filters):
+        super().__init__()
+        self.discovery = discovery
+        self.source_dir = source_dir
+        self.filters = filters
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            raw = self.discovery.list_dirs_top(self.source_dir)
+            allowed = self.filters.filter_folders(raw)
+
+            # Build a nested dict:
+            # { "Download": { "Sub": { "file.txt": {"__file__": "/sdcard/Download/Sub/file.txt"} } } }
+            tree: dict = {}
+
+            for top_dir in allowed:
+                top_name = top_dir.rstrip("/").split("/")[-1]
+                tree.setdefault(top_name, {"__dir__": top_dir})
+
+                files = self.discovery.list_files_recursive(top_dir)
+                prefix = top_dir.rstrip("/") + "/"
+
+                for abs_path in files:
+                    rel = abs_path[len(prefix):] if abs_path.startswith(prefix) else abs_path
+                    parts = [p for p in rel.split("/") if p]
+                    node = tree[top_name]
+                    cur_abs_dir = top_dir
+
+                    for idx, part in enumerate(parts):
+                        is_last = (idx == len(parts) - 1)
+                        if is_last:
+                            node.setdefault(part, {"__file__": abs_path})
+                        else:
+                            cur_abs_dir = cur_abs_dir.rstrip("/") + "/" + part
+                            node = node.setdefault(part, {"__dir__": cur_abs_dir})
+
+            msg = f"Loaded full tree for {len(allowed)} top folder(s)."
+            self.finished.emit(tree, msg)
+
+        except Exception as e:
+            self.error.emit(f"Full discovery failed: {e}")

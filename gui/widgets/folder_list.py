@@ -10,8 +10,11 @@ from PySide6.QtWidgets import (
 )
 
 ROLE_PATH = Qt.UserRole
+print("Defining ROLE_PATH =", ROLE_PATH)
 ROLE_IS_DIR = Qt.UserRole + 1
+print("Defining ROLE_IS_DIR =", ROLE_IS_DIR)
 ROLE_CHILDREN_LOADED = Qt.UserRole + 2
+print("Defining ROLE_CHILDREN_LOADED =", ROLE_CHILDREN_LOADED)
 
 
 class FolderList(QGroupBox):
@@ -53,6 +56,10 @@ class FolderList(QGroupBox):
         self._block_item_changed = False
         self.tree.itemChanged.connect(self._on_item_changed)
 
+        self._last_user_item = None
+        self.tree.itemPressed.connect(self._on_item_pressed)
+
+
     # ---------- Population ----------
 
     def set_roots(self, root_dirs: Iterable[str]) -> None:
@@ -74,6 +81,51 @@ class FolderList(QGroupBox):
             # Dummy child to show the expand arrow
             item.addChild(QTreeWidgetItem(["Loading...", ""]))
             self.tree.addTopLevelItem(item)
+
+    def set_full_tree(self, tree: dict) -> None:
+        self.tree.clear()
+        self._block_item_changed = True
+        try:
+            root = self.tree.invisibleRootItem()
+
+            def add_nodes(parent_item, subtree: dict):
+                # subtree has optional "__dir__" marker (folder abs path)
+                # leaf files have {"__file__": abs_path}
+                for name, val in sorted(subtree.items()):
+                    if name.startswith("__"):
+                        continue
+
+                    # file leaf
+                    if isinstance(val, dict) and "__file__" in val:
+                        item = QTreeWidgetItem(parent_item, [name, "File"])
+                        item.setData(0, ROLE_PATH, val["__file__"])
+                        item.setData(0, ROLE_IS_DIR, False)
+                        item.setData(0, ROLE_CHILDREN_LOADED, True)
+                        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                        item.setCheckState(0, Qt.Unchecked)
+                        continue
+
+                    # folder node
+                    abs_dir = val.get("__dir__", "")
+                    item = QTreeWidgetItem(parent_item, [name, "Folder"])
+                    item.setData(0, ROLE_PATH, abs_dir)
+                    item.setData(0, ROLE_IS_DIR, True)
+                    item.setData(0, ROLE_CHILDREN_LOADED, True)
+
+                    item.setFlags(
+                        item.flags()
+                        | Qt.ItemIsUserCheckable
+                        | Qt.ItemIsAutoTristate
+                    )
+                    item.setCheckState(0, Qt.Unchecked)
+
+                    add_nodes(item, val)
+
+            add_nodes(root, tree)
+
+            self.tree.collapseAll()  # children exist but are hidden until expand
+        finally:
+            self._block_item_changed = False
 
     def mark_children_loaded(self, parent_item: QTreeWidgetItem,
                              entries: List[Tuple[str, bool]]) -> None:
@@ -166,18 +218,28 @@ class FolderList(QGroupBox):
 
     # ---------- Internal propagation ----------
 
+    def _on_item_pressed(self, item, _col):
+        self._last_user_item = item
+
     def _on_item_changed(self, item: QTreeWidgetItem, _col: int) -> None:
         if self._block_item_changed:
             return
 
-        # Propagate state to loaded children but allow manual override later.
-        self._block_item_changed = True
-        state = item.checkState(0)
-        for i in range(item.childCount()):
-            child = item.child(i)
-            # Only force state if the child has never been changed, or you
-            # want "check parent" to override; after that user can re‑toggle.
-            child.setCheckState(0, state)
-        self._block_item_changed = False
+        # Only propagate if the user directly toggled this item
+        if item is not self._last_user_item:
+            self.selectionChanged.emit()
+            return
+
+        self._last_user_item = None
+
+        # Propagate to children (now that this was an intentional folder toggle)
+        if bool(item.data(0, ROLE_IS_DIR)):
+            self._block_item_changed = True
+            try:
+                state = item.checkState(0)
+                for i in range(item.childCount()):
+                    item.child(i).setCheckState(0, state)
+            finally:
+                self._block_item_changed = False
 
         self.selectionChanged.emit()
