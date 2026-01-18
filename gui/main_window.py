@@ -37,7 +37,7 @@ from gui.restore_widget import RestoreWidget
 from gui.style import BASE_STYLE
 from gui.widgets.folder_list import FolderList, ROLE_PATH, ROLE_IS_DIR, ROLE_CHILDREN_LOADED
 from gui.widgets.log_console import LogConsole
-from gui.workers import FolderDiscoveryWorker, BackupWorker, DirEntriesWorker
+from gui.workers import BackupWorker
 
 from config.paths import (
     ADB_PATH,

@@ -10,11 +10,8 @@ from PySide6.QtWidgets import (
 )
 
 ROLE_PATH = Qt.UserRole
-print("Defining ROLE_PATH =", ROLE_PATH)
 ROLE_IS_DIR = Qt.UserRole + 1
-print("Defining ROLE_IS_DIR =", ROLE_IS_DIR)
 ROLE_CHILDREN_LOADED = Qt.UserRole + 2
-print("Defining ROLE_CHILDREN_LOADED =", ROLE_CHILDREN_LOADED)
 
 
 class FolderList(QGroupBox):

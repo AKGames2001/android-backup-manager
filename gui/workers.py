@@ -17,39 +17,6 @@ from core.discovery import Discovery
 from core.transfer import CopyStatus
 
 
-class FolderDiscoveryWorker(QObject):
-    """
-    Worker that lists top-level device folders and applies filters.
-
-    Emits:
-      - finished(folders: list[str], message: str)
-      - error(message: str)
-    """
-    finished = Signal(list, str)
-    error = Signal(str)
-
-    def __init__(self, discovery, source_dir: str, filters):
-        super().__init__()
-        self.discovery = discovery
-        self.source_dir = source_dir
-        self.filters = filters
-
-    @Slot()
-    def run(self) -> None:
-        """Execute discovery and emit results or error."""
-        try:
-            raw = self.discovery.list_dirs_top(self.source_dir)
-            if not raw:
-                self.finished.emit([], "No folders found on device.")
-                return
-            allowed = self.filters.filter_folders(raw)
-            preview = ", ".join([f.split("/")[-1] for f in allowed[:8]])
-            msg = f"Found {len(allowed)} folder(s) after filters. Sample: [{preview}]"
-            self.finished.emit(allowed, msg)
-        except Exception as e:
-            self.error.emit(f"Discovery failed: {e}")
-
-
 class BackupWorker(QObject):
     """
     Worker that performs the backup process over one or more folders.
@@ -317,30 +284,6 @@ class RestoreWorker(QObject):
             self.finished.emit({"restored_count": copied, "failed_count": len(failed)})
         except Exception as e:
             self.error.emit(f"Restore failed: {e}")
-
-
-class DirEntriesWorker(QObject):
-    """
-    Worker that lists immediate entries for a given device directory.
-    Emits:
-    - finished(parent_dir: str, entries: List[Tuple[str, bool]])
-    - error(message: str)
-    """
-    finished = Signal(str, list)
-    error = Signal(str)
-
-    def __init__(self, discovery, parent_dir: str):
-        super().__init__()
-        self.discovery = discovery
-        self.parent_dir = parent_dir
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            entries = self.discovery.list_entries(self.parent_dir)
-            self.finished.emit(self.parent_dir, entries)
-        except Exception as e:
-            self.error.emit(f"Expand failed: {e}")
 
 
 class FullTreeDiscoveryWorker(QObject):
