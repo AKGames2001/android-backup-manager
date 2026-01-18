@@ -230,34 +230,63 @@ class RestoreWidget(QWidget):
     def _insert_tree(self, parent_item, subtree: dict):
         for name, val in sorted(subtree.items()):
             if isinstance(val, dict):
+                # Directory node
                 item = QTreeWidgetItem(parent_item, [name])
-                item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                flags = (
+                    item.flags()
+                    | Qt.ItemIsEnabled
+                    | Qt.ItemIsSelectable
+                    | Qt.ItemIsUserCheckable
+                    | Qt.ItemIsAutoTristate
+                )
+                item.setFlags(flags)
+                item.setCheckState(0, Qt.Unchecked)
                 self._insert_tree(item, val)
             else:
+                # Leaf file node
                 roots = ", ".join(sorted(val))
                 item = QTreeWidgetItem(parent_item, [name, roots])
-                item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+                flags = item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
+                item.setFlags(flags)
                 item.setCheckState(0, Qt.Unchecked)
 
     def _gather_checked_leaves(self):
+        """
+        Collect (rel_path, roots) for all files that are effectively selected.
+
+        Rules:
+        - A checked directory implies all its descendant files, except those the user
+        explicitly unchecked.
+        - A checked file is always included, regardless of ancestor states.
+        """
         result = []
         root = self.tree.invisibleRootItem()
 
-        def walk(node, parts):
+        def walk(node, parts, inherited_checked: bool):
             for i in range(node.childCount()):
                 child = node.child(i)
                 name = child.text(0)
                 has_children = child.childCount() > 0
+                state = child.checkState(0)
+
+                # Folder node
                 if has_children:
-                    walk(child, parts + [name])
+                    # Effective checked if this node is Checked or inherited from parent
+                    child_effective_checked = inherited_checked or (state == Qt.Checked)
+                    walk(child, parts + [name], child_effective_checked)
                 else:
-                    if child.checkState(0) == Qt.Checked:
-                        rel = "/".join(parts + [name])
+                    # Leaf file
+                    # A file is selected if:
+                    # - it's explicitly Checked, OR
+                    # - it inherits Checked from an ancestor AND is not explicitly Unchecked
+                    is_explicit_checked = (state == Qt.Checked)
+                    if is_explicit_checked or inherited_checked:
                         roots_str = child.text(1)
                         roots = [r.strip() for r in roots_str.split(",") if r.strip()]
+                        rel = "/".join(parts + [name])
                         result.append((rel, roots))
 
-        walk(root, [])
+        walk(root, [], False)
         return result
 
     def _collect_selected_leaves(self):

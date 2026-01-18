@@ -7,6 +7,7 @@ and starts the Qt event loop.
 
 import sys
 from PySide6.QtWidgets import QApplication
+
 from gui.app import create_app
 
 

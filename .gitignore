@@ -223,3 +223,6 @@ ruff_cache/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+AndroidBackupManager.iss
+AndroidBackupManager-alpha-v1.0.0-Setup.exe
