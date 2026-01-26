@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import os
 from typing import Dict, List, Tuple
+
 from PySide6.QtCore import QObject, Signal, Slot
+
 from core.discovery import Discovery
 from core.transfer import CopyStatus
 
@@ -37,7 +39,7 @@ class BackupWorker(QObject):
     finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, service, folders: List | None = None):
+    def __init__(self, service, folders: List = None) -> None:
         super().__init__()
         self.service = service
         self.folders = folders
@@ -94,8 +96,10 @@ class BackupWorker(QObject):
         total_files = 0
         per_folder_files: Dict[str, List[str]] = {}
 
-        # Normalise input to List[Tuple[path, is_dir]]
-        items: List[Tuple[str, bool]] = []
+        # selected may be:
+        # - legacy: List[str] folders
+        # - new: List[Tuple[path, isdir]]
+        items: List[Tuple[str, bool]]
         if selected and isinstance(selected[0], (list, tuple)) and len(selected[0]) >= 2:
             items = [(p, bool(is_dir)) for (p, is_dir, *_) in selected]  # tolerate extra fields
         else:
@@ -103,7 +107,7 @@ class BackupWorker(QObject):
             items = [(p, True) for p in (selected or [])]
 
         source_root = self.service.source_dir.rstrip("/")
-        root_prefix = source_root + "/"
+        root_prefix = source_root
 
         # Collect all individual files that need to be copied
         all_files: List[str] = []
@@ -130,7 +134,7 @@ class BackupWorker(QObject):
                 # Outside configured root; skip
                 self.log.emit(f"Skipping path outside source root: {f}")
                 continue
-            rel_from_root = f[len(root_prefix):]
+            rel_from_root = f[len(root_prefix):].lstrip("/")
             top = rel_from_root.split("/", 1)[0] if rel_from_root else ""
             if not top:
                 continue
@@ -151,34 +155,28 @@ class BackupWorker(QObject):
         processed = 0
         total_copied = 0
         all_failed: List[str] = []
-        session_rel_paths: set[str] = set()
-
-        backup_root_name = os.path.basename(self.service.dest_root.rstrip("/\\") or "")
+        backup_root_name = os.path.basename(self.service.dest_root.rstrip("\\/")) or "Unknown"
 
         for folder, files in per_folder_files.items():
             if self.abort:
                 self.log.emit("Backup aborted by user.")
                 break
 
-            base_name = os.path.basename(folder.rstrip("/"))
             for f in files:
                 if self.abort:
                     self.log.emit("Backup aborted by user.")
                     break
 
-                status = self.service.transfer.copy_file(f, folder)
+                status = self.service.transfer.copy_file(f, folder, backup_root_name)
+
                 processed += 1
                 self.progress.emit(processed, total_files)
 
                 if status is CopyStatus.COPIED:
-                    # Compute device-relative path under top folder
-                    rel = os.path.relpath(f, folder).replace("\\", "/")
-                    rel_dev = f"{base_name}/{rel}".strip("/")
-                    session_rel_paths.add(rel_dev)
                     total_copied += 1
                     self.log.emit(f"Copied: {f}")
                 elif status is CopyStatus.SKIPPED:
-                    self.log.emit(f"Skipped (already in record): {f}")
+                    self.log.emit(f"Skipped (already indexed): {f}")
                 else:
                     all_failed.append(f)
                     self.log.emit(f"Failed: {f}")
@@ -188,39 +186,22 @@ class BackupWorker(QObject):
 
         # Persist failed entries once
         self.service.transfer.write_failed_csv(self.service.failed_csv_path, all_failed)
-
-        # Update restore record once per session
-        if session_rel_paths and backup_root_name:
-            self.service.restore_manager.add_or_update_root(
-                root_name=backup_root_name,
-                files=sorted(session_rel_paths),
-                description=f"Backup on {backup_root_name}",
-            )
-
         return {"copied_count": total_copied, "failed_count": len(all_failed)}
 
 
 class RestoreWorker(QObject):
     """
-    Worker that restores selected files from local backups back to the device.
-
-    Items format:
-      List[Tuple[str, List[str]]] where each entry is (rel_path, available_roots).
-      rel_path examples: "Download/file.txt", "Pictures/Camera/img.jpg".
-      available_roots are backup root names (e.g., "2025-09-06").
-
-    Emits:
-      - progress(current: int, total: int)
-      - log(message: str)
-      - finished(stats: dict)
-      - error(message: str)
+    Items format: List[Tuple[device_rel, chosen_root, local_rel]]
+    - device_rel: e.g. "Download/a.txt"
+    - chosen_root: e.g. "2025-12-31"
+    - local_rel: relative path under that root folder (Windows-safe if needed)
     """
     progress = Signal(int, int)
     log = Signal(str)
     finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, adb, base_backup_dir: str, source_dir: str, items: List[Tuple[str, List[str]]]):
+    def __init__(self, adb, base_backup_dir: str, source_dir: str, items: List[Tuple[str, str, str]]) -> None:
         super().__init__()
         self.adb = adb
         self.base_backup_dir = base_backup_dir
@@ -234,54 +215,57 @@ class RestoreWorker(QObject):
         try:
             total = len(self.items)
             done = 0
-            copied = 0
+            restored = 0
             failed: List[str] = []
 
             self.log.emit(f"Starting restore of {total} items")
 
-            for rel_path, roots in self.items:
+            for device_rel, root, local_rel in self.items:
                 if self.abort:
                     self.log.emit("Restore aborted by user.")
                     break
 
-                preferred_root = sorted(roots)[-1] if roots else ""
-                if not preferred_root:
-                    failed.append(rel_path)
-                    self.log.emit(f"No backup root for: {rel_path}")
+                root = (root or "").strip()
+                if not root:
+                    failed.append(device_rel)
+                    self.log.emit(f"No root selected for: {device_rel}")
                     done += 1
                     self.progress.emit(done, total)
                     continue
-
+                
                 # Build local path on PC
-                local_path = os.path.join(self.base_backup_dir, preferred_root, rel_path.replace("/", os.sep))
+                local_path = os.path.join(
+                    self.base_backup_dir,
+                    root,
+                    (local_rel or device_rel).replace("/", os.sep),
+                )
                 if not os.path.exists(local_path):
-                    failed.append(rel_path)
+                    failed.append(device_rel)
                     self.log.emit(f"Local file missing: {local_path}")
                     done += 1
                     self.progress.emit(done, total)
                     continue
 
-                # Build remote path on device and ensure parent directory exists
-                remote_path = f"{self.source_dir}/{rel_path}"
-                parent_dir = remote_path.rsplit("/", 1) if "/" in remote_path else self.source_dir
-                parent_dir = parent_dir[0] if isinstance(parent_dir, list) else parent_dir
+                remote_path = f"{self.source_dir}/{device_rel}".replace("\\", "/")
+                parent_dir = remote_path.rsplit("/", 1)[0] if "/" in remote_path else self.source_dir
+
                 try:
                     self.adb.ensure_remote_dir(parent_dir)
                     proc = self.adb.push(local_path, remote_path)
                     if getattr(proc, "returncode", 1) == 0:
-                        copied += 1
-                        self.log.emit(f"Restored: {rel_path} -> {preferred_root}")
+                        restored += 1
+                        self.log.emit(f"Restored: {device_rel} (from {root})")
                     else:
-                        failed.append(rel_path)
-                        self.log.emit(f"Failed restore: {rel_path}. Stderr: {(proc.stderr or '').strip()}")
+                        failed.append(device_rel)
+                        self.log.emit(f"Failed restore: {device_rel}. Stderr: {(proc.stderr or '').strip()}")
                 except Exception as e:
-                    failed.append(rel_path)
-                    self.log.emit(f"Failed restore: {rel_path}. Error: {e}")
+                    failed.append(device_rel)
+                    self.log.emit(f"Failed restore: {device_rel}. Error: {e}")
 
                 done += 1
                 self.progress.emit(done, total)
 
-            self.finished.emit({"restored_count": copied, "failed_count": len(failed)})
+            self.finished.emit({"restored_count": restored, "failed_count": len(failed)})
         except Exception as e:
             self.error.emit(f"Restore failed: {e}")
 
@@ -297,7 +281,7 @@ class FullTreeDiscoveryWorker(QObject):
     finished = Signal(dict, str)
     error = Signal(str)
 
-    def __init__(self, discovery: Discovery, source_dir: str, filters):
+    def __init__(self, discovery: Discovery, source_dir: str, filters) -> None:
         super().__init__()
         self.discovery = discovery
         self.source_dir = source_dir
@@ -314,25 +298,39 @@ class FullTreeDiscoveryWorker(QObject):
             tree: dict = {}
 
             for top_dir in allowed:
-                top_name = top_dir.rstrip("/").split("/")[-1]
-                tree.setdefault(top_name, {"__dir__": top_dir})
+                topdir_norm = top_dir.rstrip("/")
+                top_name = topdir_norm.split("/")[-1] or topdir_norm
 
-                files = self.discovery.list_files_recursive(top_dir)
-                prefix = top_dir.rstrip("/") + "/"
+                # Top folder node
+                top_node = tree.setdefault(top_name, {})
+                top_node["__dir__"] = topdir_norm
+
+                files = self.discovery.list_files_recursive(topdir_norm)
+                prefix = topdir_norm.rstrip("/")
 
                 for abs_path in files:
-                    rel = abs_path[len(prefix):] if abs_path.startswith(prefix) else abs_path
+                    # abspath: e.g. sdcard/Download/a/b.txt
+                    rel = abs_path[len(prefix):].lstrip("/") if abs_path.startswith(prefix) else abs_path
                     parts = [p for p in rel.split("/") if p]
-                    node = tree[top_name]
-                    cur_abs_dir = top_dir
+                    if not parts:
+                        continue
+
+                    node = top_node
+                    cur_abs_dir = topdir_norm
 
                     for idx, part in enumerate(parts):
-                        is_last = (idx == len(parts) - 1)
+                        is_last = idx == (len(parts) - 1)
+
                         if is_last:
-                            node.setdefault(part, {"__file__": abs_path})
+                            node[part] = {"__file__": abs_path}
                         else:
-                            cur_abs_dir = cur_abs_dir.rstrip("/") + "/" + part
-                            node = node.setdefault(part, {"__dir__": cur_abs_dir})
+                            cur_abs_dir = f"{cur_abs_dir}/{part}".rstrip("/")
+                            child = node.get(part)
+                            if not isinstance(child, dict):
+                                child = {}
+                                node[part] = child
+                            child.setdefault("__dir__", cur_abs_dir)
+                            node = child
 
             msg = f"Loaded full tree for {len(allowed)} top folder(s)."
             self.finished.emit(tree, msg)

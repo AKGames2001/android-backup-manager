@@ -9,6 +9,7 @@ from __future__ import annotations
 from .adb_client import ADBClient
 from .discovery import Discovery
 from .filters import Filters
+from .index import UnifiedIndex
 from .paths import PathMapper
 from .record import RecordStore
 from .restore_manager import RestoreManager
@@ -20,16 +21,17 @@ __version__ = "0.1.0"
 
 # Explicit public API for consumers: from core import ADBClient, BackupService, ...
 __all__ = [
+    "__version__",
     "ADBClient",
+    "BackupService",
+    "CopyStatus",
     "Discovery",
     "Filters",
     "PathMapper",
     "RecordStore",
     "RestoreManager",
     "Transfer",
-    "CopyStatus",
-    "BackupService",
-    "__version__",
+    "UnifiedIndex"
 ]
 
 

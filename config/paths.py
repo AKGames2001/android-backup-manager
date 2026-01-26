@@ -9,6 +9,7 @@ SOURCE_DIR = "/sdcard/"
 BASE_BACKUP_DIR = r"backups"
 DEFAULT_USER = "User"
 
+INDEX_FILENAME = "index.json"
 RECORD_FILENAME = "record.json"
 FAILED_CSV_FILENAME = os.path.join("data", "failed-files.csv")
 
@@ -32,6 +33,9 @@ def path_for_user_session(base_dir: str, user: str, use_date: bool = True) -> st
     if use_date:
         return os.path.join(base_dir, user, today_dirname())
     return os.path.join(base_dir, user)
+
+def index_path_for_user(basedir: str, user: str) -> str:
+    return os.path.join(basedir, user, INDEX_FILENAME)
 
 def record_path_for_user(base_dir: str, user: str) -> str:
     return os.path.join(base_dir, user, RECORD_FILENAME)
